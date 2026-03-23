@@ -1,0 +1,135 @@
+name: Rollback Databricks Asset Bundle (Prod)
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: 'Select project to rollback'
+        required: true
+        type: choice
+        options:
+          - "-- select a project --"
+          - project_1
+          - project_2
+          - project_3
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  resolve-rollback-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      PROJECTS: ${{ steps.resolve.outputs.PROJECTS }}
+      rollback_tag: ${{ steps.resolve.outputs.rollback_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve rollback tag (Python)
+        id: resolve
+        run: |
+          python .github/scripts/resolve_rollback_tag.py \
+            "${{ github.event.inputs.project }}" >> $GITHUB_OUTPUT
+
+  rollback-deploy:
+    runs-on: ubuntu-latest
+    needs: resolve-rollback-tag
+    environment: prod
+    strategy:
+      matrix:
+        include:
+          - region: euce1
+            target: prod-euce1
+          - region: saea1
+            target: prod-saea1
+          - region: usea1
+            target: prod-usea1
+          - region: apso1
+            target: prod-apso1
+          - region: apse3
+            target: prod-apse3
+          - region: afso1
+            target: prod-afso1
+          - region: meso1
+            target: prod-meso1
+          - region: usea2
+            target: prod-usea2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run rollback checkout script (Python)
+        run: |
+          python .github/scripts/rollback_checkout.py \
+            "${{ needs.resolve-rollback-tag.outputs.PROJECTS }}" \
+            "${{ needs.resolve-rollback-tag.outputs.rollback_tag }}"
+
+      - run: bash .github/scripts/install_databricks.sh
+
+      - name: Set Databricks credentials
+        run: |
+          case "${{ matrix.region }}" in
+            euce1)
+              echo "DATABRICKS_HOST=${{ secrets.DATABRICKS_WS_EUCE1_V4C_CICD_HOST }}" >> $GITHUB_ENV
+              echo "DATABRICKS_TOKEN=${{ secrets.DATABRICKS_WS_EUCE1_V4C_CICD_TOKEN }}" >> $GITHUB_ENV
+              ;;
+            saea1)
+              echo "DATABRICKS_HOST=${{ secrets.DATABRICKS_WS_SAEA1_V4C_CICD_HOST }}" >> $GITHUB_ENV
+              echo "DATABRICKS_TOKEN=${{ secrets.DATABRICKS_WS_SAEA1_V4C_CICD_TOKEN }}" >> $GITHUB_ENV
+              ;;
+            usea1)
+              echo "DATABRICKS_HOST=${{ secrets.DATABRICKS_WS_USEA1_HOST }}" >> $GITHUB_ENV
+              echo "DATABRICKS_TOKEN=${{ secrets.DATABRICKS_WS_USEA1_TOKEN }}" >> $GITHUB_ENV
+              ;;
+            apso1)
+              echo "DATABRICKS_HOST=${{ secrets.DATABRICKS_WS_APSO1_HOST }}" >> $GITHUB_ENV
+              echo "DATABRICKS_TOKEN=${{ secrets.DATABRICKS_WS_APSO1_TOKEN }}" >> $GITHUB_ENV
+              ;;
+            apse3)
+              echo "DATABRICKS_HOST=${{ secrets.DATABRICKS_WS_APSE3_HOST }}" >> $GITHUB_ENV
+              echo "DATABRICKS_TOKEN=${{ secrets.DATABRICKS_WS_APSE3_TOKEN }}" >> $GITHUB_ENV
+              ;;
+            afso1)
+              echo "DATABRICKS_HOST=${{ secrets.DATABRICKS_WS_AFSO1_HOST }}" >> $GITHUB_ENV
+              echo "DATABRICKS_TOKEN=${{ secrets.DATABRICKS_WS_AFSO1_TOKEN }}" >> $GITHUB_ENV
+              ;;
+            meso1)
+              echo "DATABRICKS_HOST=${{ secrets.DATABRICKS_WS_MESO1_HOST }}" >> $GITHUB_ENV
+              echo "DATABRICKS_TOKEN=${{ secrets.DATABRICKS_WS_MESO1_TOKEN }}" >> $GITHUB_ENV
+              ;;
+            usea2)
+              echo "DATABRICKS_HOST=${{ secrets.DATABRICKS_WS_USEA2_HOST }}" >> $GITHUB_ENV
+              echo "DATABRICKS_TOKEN=${{ secrets.DATABRICKS_WS_USEA2_TOKEN }}" >> $GITHUB_ENV
+              ;;
+          esac
+
+      - name: Validate ${{ matrix.region }}
+        env:
+          PROJECTS: ${{ needs.resolve-rollback-tag.outputs.PROJECTS }}
+        run: python .github/scripts/run_bundle.py validate $PROJECTS --target ${{ matrix.target }}
+
+      - name: Plan ${{ matrix.region }}
+        env:
+          PROJECTS: ${{ needs.resolve-rollback-tag.outputs.PROJECTS }}
+        run: python .github/scripts/run_bundle.py plan $PROJECTS --target ${{ matrix.target }}
+
+      - name: Deploy ${{ matrix.region }}
+        env:
+          PROJECTS: ${{ needs.resolve-rollback-tag.outputs.PROJECTS }}
+        run: python .github/scripts/run_bundle.py deploy $PROJECTS --target ${{ matrix.target }}
+
+      - name: Commit rollback deployment
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git checkout -b rollback-${{ needs.resolve-rollback-tag.outputs.PROJECTS }}
+          git add ${{ needs.resolve-rollback-tag.outputs.PROJECTS }}
+          git commit -m "Rollback deployment of ${{ needs.resolve-rollback-tag.outputs.PROJECTS }} to ${{ needs.resolve-rollback-tag.outputs.rollback_tag }}"
+          git push origin rollback-${{ needs.resolve-rollback-tag.outputs.PROJECTS }}
